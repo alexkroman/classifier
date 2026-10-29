@@ -1,12 +1,10 @@
-"""Transcribe every clip with every STT model and record per-clip word-error counts."""
+"""The candidate STT models: transcribe every clip with each and record per-clip word-error counts."""
 
 import math
-import shutil
 
 import jiwer
 import numpy as np
 import torch
-from datasets import load_from_disk
 from tqdm import tqdm
 from transformers import (
     AutoProcessor,
@@ -85,12 +83,3 @@ def score(ds, desc="", models=MODELS):
         ds = ds.add_column(f"hyp_{name}", hyps)
         ds = ds.add_column(f"err_{name}", [word_errors(r, h) for r, h in zip(text, hyps, strict=True)])
     return ds.add_column("n_words", [len(normalize(t).split()) for t in text])
-
-
-if __name__ == "__main__":
-    for split in ("train", "test"):
-        ds = score(load_from_disk(f"data/{split}"), desc=split)
-        ds.save_to_disk(f"data/{split}_scored")
-        shutil.rmtree(f"data/{split}")  # scored copy has the audio too; save disk
-        for m in MODELS:
-            print(f"{split} {m} corpus WER: {sum(ds[f'err_{m}']) / sum(ds['n_words']):.4f}")

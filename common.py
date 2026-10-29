@@ -1,51 +1,20 @@
-import os
-
 import numpy as np
 from datasets import load_from_disk
 from transformers import AutoFeatureExtractor
 
-ROUTER_BASE = "openai/whisper-tiny"
+MOONSHINE_BASE = "UsefulSensors/moonshine-tiny"  # the router's encoder
 LABELS = ["moonshine", "whisper", "conformer"]  # class index -> STT model to route to
-DATA = "data/mix"  # domain-balanced ESB mix (prepare_esb.py); "data" = the original Loquacious set
-WEIGHT_CAP = 10.0  # stop a single hallucination loop from dominating the loss
+DATA = "data/speakers"  # speaker-diverse chunks (prepare_speakers.py)
 
-feature_extractor = AutoFeatureExtractor.from_pretrained(ROUTER_BASE)
-
-
-def recording_group(id_, spk_id):
-    """Speaker (or, when unknown, source recording) so validation never shares a voice with training."""
-    if spk_id:
-        return spk_id
-    if "-PLENARY-" in id_:
-        return id_.split("_")[0]  # parliament session
-    return id_.rsplit("-", 3)[0]  # YouTube video id
-
-
-def router_val_mask(ds, val_frac=0.15):
-    """Boolean mask over `ds` rows that fall in the speaker-disjoint validation split (deterministic)."""
-    groups = [recording_group(i, s) for i, s in zip(ds["ID"], ds["spk_id"], strict=True)]
-    rng = np.random.default_rng(0)
-    uniq = sorted(set(groups))
-    val_groups = set(rng.choice(uniq, size=int(len(uniq) * val_frac), replace=False))
-    return np.array([g in val_groups for g in groups])
+feature_extractor = AutoFeatureExtractor.from_pretrained(MOONSHINE_BASE)
+# Pad Moonshine batches to a multiple of 2s: MPS compiles a graph per input shape and never frees them, so
+# arbitrary lengths leak memory until OOM. The padding is masked out, so outputs don't change.
+MOONSHINE_PAD = 2 * 16_000
 
 
 def load_router_splits(data=DATA):
-    """Speaker-disjoint train / val / test splits.
-
-    data/mix ships explicit splits. For the Loquacious layout (train_scored + official test_scored) the
-    validation split is carved out of train by speaker: a random split leaks voices across the boundary and
-    lets the router memorize "this voice -> whisper", inflating validation relative to test.
-    """
-    if os.path.exists(f"{data}/val_scored"):
-        return {s: load_from_disk(f"{data}/{s}_scored") for s in ("train", "val", "test")}
-    ds = load_from_disk(f"{data}/train_scored")
-    is_val = router_val_mask(ds)
-    return {
-        "train": ds.select(np.where(~is_val)[0]),
-        "val": ds.select(np.where(is_val)[0]),
-        "test": load_from_disk(f"{data}/test_scored"),
-    }
+    """Train / val / test splits, disjoint by speaker or recording (assigned in prepare_speakers.py)."""
+    return {s: load_from_disk(f"{data}/{s}_scored") for s in ("train", "val", "test")}
 
 
 def error_matrix(ds, labels=LABELS):
@@ -53,21 +22,31 @@ def error_matrix(ds, labels=LABELS):
     return np.stack([np.array(ds[f"err_{m}"]) for m in labels], 1)
 
 
+TARGETS = ("cost",)  # per-clip training targets, passed through the feature transform
+
+
 def add_targets(ds):
-    """regret[k] = extra word errors from routing to model k instead of the clip's best model (capped)."""
+    """cost[k] = model k's word errors minus the clip's mean over models, uncapped (the diff loss target).
+
+    Centering cancels the difficulty every model shares, which is most of the variance; the argmin is unchanged.
+    """
     err = error_matrix(ds)
-    regret = np.minimum(err - err.min(1, keepdims=True), WEIGHT_CAP).astype(np.float32)
-    return ds.add_column("regret", regret.tolist())
+    cost = (err - err.mean(1, keepdims=True)).astype(np.float32)
+    return ds.add_column("cost", cost.tolist())
 
 
-def to_features(batch):
+def to_moonshine_features(batch):
+    """Raw waveform padded to the longest clip in the batch (Moonshine takes variable length; no 30s window)."""
     feats = feature_extractor(
-        [a["array"] for a in batch["audio"]], sampling_rate=16_000, return_tensors="pt", return_attention_mask=True
+        [a["array"] for a in batch["audio"]],
+        sampling_rate=16_000,
+        return_tensors="pt",
+        return_attention_mask=True,
+        padding=True,
+        pad_to_multiple_of=MOONSHINE_PAD,
     )
-    out = {"input_features": feats.input_features, "attention_mask": feats.attention_mask}
-    if "regret" in batch:
-        out["regret"] = batch["regret"]
-    return out
+    out = {"input_values": feats.input_values, "attention_mask": feats.attention_mask}
+    return out | {t: batch[t] for t in TARGETS if t in batch}
 
 
 def routed_errors(choice, err):
