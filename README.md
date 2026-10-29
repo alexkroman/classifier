@@ -109,11 +109,38 @@ was added. Test: 1,594 chunks, 9.3 h. WER (%):
 Router vs. the best single model (conformer): -0.98 WER points, 95% CI [-1.38, -0.49], p=0.0001.
 The router closes 31% of the oracle gap; the per-source baseline closes 30%.
 
-**Final run (EdAcc + SpecAugment).**
+**Final run (EdAcc + SpecAugment).** The recipe in [Pipeline](#pipeline): 8-epoch head, then 5 epochs of
+fine-tuning with SpecAugment (time 0.1, channels 0.05), last epoch of each stage
+(`models/router_speakers_moon_lpft_sa`). Test: 1,736 chunks, 10.1 h, all speakers unseen. WER (%):
 
-<!-- FINAL RESULTS: filled in after models/router_speakers_moon_lpft_sa is evaluated -->
+| dataset | moonshine | whisper | conformer | best per dataset (picked on train) | router | oracle |
+|---|---|---|---|---|---|---|
+| ami | 21.1 | 21.8 | 17.3 | 17.3 | 17.3 | 15.2 |
+| earnings22 | 24.6 | 25.8 | 26.4 | 25.8 | 25.4 | 19.2 |
+| edacc | 36.7 | 36.9 | 34.5 | 34.5 | 34.2 | 30.7 |
+| gigaspeech | 11.7 | 11.8 | 13.7 | 11.8 | 12.1 | 8.9 |
+| librispeech | 7.7 | 8.6 | 5.7 | 5.7 | 5.7 | 4.7 |
+| spgispeech | 7.9 | 7.1 | 9.2 | 7.1 | 7.1 | 5.0 |
+| voxpopuli | 12.3 | 11.5 | 9.3 | 9.3 | 9.5 | 8.2 |
+| **ALL** | 13.36 | 13.42 | 12.78 | 11.91 | **11.91** | 9.60 |
 
-*Pending:* results for the full 7-domain dataset with the SpecAugment recipe above go here.
+Router vs. the best single model (conformer): -0.87 WER points, 95% CI [-1.26, -0.42], p=0.0006; it is
+also significantly better than moonshine and whisper. It routes 51% to conformer, 44% to whisper and 5%
+to moonshine. **On test it ties the per-source baseline exactly** (both close 28% of the oracle gap):
+small within-source gains on earnings22 and EdAcc (-0.4 points each) are cancelled by small losses on
+gigaspeech and voxpopuli (+0.2 each).
+
+Fit check, % of the oracle gap closed (stage 1 = the frozen-encoder head the fine-tune starts from):
+
+| | train | test | test WER |
+|---|---|---|---|
+| per-source baseline | 36% | 28% | 11.91 |
+| stage 1 (frozen encoder, 8-epoch head) | 37% | 28% | 11.90 |
+| stage 2 (fine-tuned encoder + SpecAugment) | 39% | 28% | 11.91 |
+
+Fine-tuning raises the training fit by 2 points over stage 1 but transfers nothing to unseen speakers,
+even with SpecAugment. On this data the router is a domain detector: it beats every single model, and
+matches but does not beat routing by dataset label.
 
 ## Findings
 
@@ -122,9 +149,9 @@ The router closes 31% of the oracle gap; the per-source baseline closes 30%.
   An MSE-style regressor therefore ends up predicting each domain's mean cost vector.
 - **The remaining headroom is speaker-level and chunk-level noise.** A per-speaker hindsight oracle
   closes ~57% of the gap. Frozen ASR features can't express speaker identity, because ASR encoders are
-  trained to ignore speaker and channel. Fine-tuning fits the training speakers (+4 points over
-  per-source on train) but transfers only about +1 on test. More distinct speakers is the lever: there
-  are only 793 training voices.
+  trained to ignore speaker and channel. Fine-tuning fits the training speakers (+3 points over
+  per-source on train in the final run) but transfers nothing to test (0 points), with or without
+  SpecAugment. More distinct speakers is the lever: there are only 793 training voices.
 - **Moonshine is rarely chosen.** It is never the best on average in any training domain. It is
   strictly best on only 16% of chunks, by a median of 1 word, and loses on 60%, by a median of 2.
 - **Headroom per domain** is largest where error rates are high, the models are close on average, and
