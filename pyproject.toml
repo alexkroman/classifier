@@ -1,0 +1,33 @@
+[project]
+name = "stt-router"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "accelerate>=1.15.0",
+    "datasets<4",
+    "evaluate>=0.4.6",
+    "jiwer",
+    "librosa",
+    "nemo-toolkit[asr]>=3.0.0",
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "soundfile",
+    "torch",
+    "torchaudio",
+    "tqdm",
+    "transformers>=4.48",
+]
+
+[tool.uv]
+# respect safe-chain's minimum package age policy
+exclude-newer = "2026-10-14T00:00:00Z"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
